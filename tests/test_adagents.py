@@ -1526,7 +1526,7 @@ class TestGetPropertiesByAgent:
         result = get_properties_by_agent(adagents_data, "https://interchange.io")
         assert len(result) == 6843
         result_domains = {p["publisher_domain"] for p in result}
-        assert result_domains <= set(child_domains)
+        assert result_domains == set(child_domains)  # all 6,800 must appear, not just a subset
         assert all("raptive_managed" in p.get("tags", []) for p in result)
         # Must return resolved property dicts, not selector dicts
         assert all("property_id" in p for p in result)

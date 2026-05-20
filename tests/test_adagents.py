@@ -9,11 +9,16 @@ import httpx
 import pytest
 
 from adcp.adagents import (
+    AgentDirectoryLookup,
+    AgentPublisherEntry,
     AuthorizationContext,
+    PublisherDivergence,
     _normalize_domain,
     _validate_publisher_domain,
+    detect_publisher_properties_divergence,
     domain_matches,
     fetch_agent_authorizations,
+    fetch_agent_authorizations_from_directory,
     get_all_properties,
     get_all_tags,
     get_properties_by_agent,
@@ -2675,3 +2680,271 @@ class TestValidateAdagentsStructure:
         err = AdagentsEntryError(index=0, kind="missing_url", message="x")
         with pytest.raises(dataclasses.FrozenInstanceError):
             err.index = 1  # type: ignore[misc]
+
+
+class TestFetchAgentAuthorizationsFromDirectory:
+    """Tests for fetch_agent_authorizations_from_directory (Part 2 of #749)."""
+
+    def _make_response(self, publishers: list[dict], cursor: str | None = None) -> MagicMock:
+        resp = MagicMock()
+        resp.json.return_value = {
+            "publishers": publishers,
+            "cursor": cursor,
+            "total": len(publishers),
+        }
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    async def test_returns_publisher_entries(self):
+        """Should deserialize publisher rows into AgentPublisherEntry dataclasses."""
+        raw_publishers = [
+            {
+                "publisher_domain": "cafemedia.com",
+                "discovery_method": "adagents_authoritative",
+                "manager_domain": "cafemedia.com",
+                "properties_authorized": 6843,
+                "properties_total": 6843,
+                "signing_keys_pinned": True,
+                "status": "authorized",
+                "last_verified_at": "2026-05-20T00:00:00Z",
+            },
+            {
+                "publisher_domain": "site0001.raptive.com",
+                "discovery_method": "adagents_authoritative",
+                "manager_domain": "cafemedia.com",
+                "properties_authorized": 1,
+                "properties_total": 1,
+                "signing_keys_pinned": False,
+                "status": "authorized",
+                "last_verified_at": "2026-05-20T00:00:00Z",
+            },
+        ]
+        mock_client = MagicMock()
+        mock_client.get = AsyncMock(return_value=self._make_response(raw_publishers))
+
+        result = await fetch_agent_authorizations_from_directory(
+            "https://interchange.io",
+            client=mock_client,
+        )
+
+        assert isinstance(result, AgentDirectoryLookup)
+        assert result.agent_url == "https://interchange.io"
+        assert len(result.publishers) == 2
+        assert result.cursor is None
+        assert result.total == 2
+
+        first = result.publishers[0]
+        assert isinstance(first, AgentPublisherEntry)
+        assert first.publisher_domain == "cafemedia.com"
+        assert first.discovery_method == "adagents_authoritative"
+        assert first.manager_domain == "cafemedia.com"
+        assert first.properties_authorized == 6843
+        assert first.signing_keys_pinned is True
+        assert first.status == "authorized"
+
+    async def test_url_encodes_agent_url(self):
+        """agent_url with slashes and colons must be %-encoded in the path."""
+        mock_client = MagicMock()
+        mock_client.get = AsyncMock(return_value=self._make_response([]))
+
+        await fetch_agent_authorizations_from_directory(
+            "https://interchange.io",
+            client=mock_client,
+        )
+
+        call_url = mock_client.get.call_args[0][0]
+        assert "https%3A%2F%2Finterchange.io" in call_url
+        assert "/api/v1/agents/" in call_url
+
+    async def test_pagination_cursor_returned(self):
+        """When server returns a cursor, it is exposed on AgentDirectoryLookup."""
+        mock_client = MagicMock()
+        mock_client.get = AsyncMock(
+            return_value=self._make_response(
+                [{"publisher_domain": "example.com", "discovery_method": "adagents_authoritative",
+                  "manager_domain": None, "properties_authorized": 1, "properties_total": 1,
+                  "signing_keys_pinned": False, "status": "authorized", "last_verified_at": None}],
+                cursor="next-page-token",
+            )
+        )
+
+        result = await fetch_agent_authorizations_from_directory(
+            "https://interchange.io",
+            client=mock_client,
+        )
+        assert result.cursor == "next-page-token"
+
+    async def test_default_status_is_authorized(self):
+        """Default status filter should be 'authorized' (not a mutable default arg)."""
+        mock_client = MagicMock()
+        mock_client.get = AsyncMock(return_value=self._make_response([]))
+
+        await fetch_agent_authorizations_from_directory(
+            "https://interchange.io",
+            client=mock_client,
+        )
+
+        _, kwargs = mock_client.get.call_args
+        params = kwargs.get("params", {})
+        assert params.get("status") == "authorized"
+
+    async def test_custom_directory_url(self):
+        """directory_url prefix should be respected."""
+        mock_client = MagicMock()
+        mock_client.get = AsyncMock(return_value=self._make_response([]))
+
+        await fetch_agent_authorizations_from_directory(
+            "https://interchange.io",
+            directory_url="https://custom-dir.example.com",
+            client=mock_client,
+        )
+
+        call_url = mock_client.get.call_args[0][0]
+        assert call_url.startswith("https://custom-dir.example.com")
+
+
+class TestDetectPublisherPropertiesDivergence:
+    """Tests for detect_publisher_properties_divergence (Part 3 of #749)."""
+
+    def _make_dir_response(self, publishers: list[dict]) -> MagicMock:
+        resp = MagicMock()
+        resp.json.return_value = {
+            "publishers": publishers,
+            "cursor": None,
+            "total": len(publishers),
+        }
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    async def test_no_divergence_returns_empty(self):
+        """When directory count matches federated count, report should be empty."""
+        dir_publishers = [
+            {"publisher_domain": "match.com", "discovery_method": "adagents_authoritative",
+             "manager_domain": None, "properties_authorized": 2, "properties_total": 2,
+             "signing_keys_pinned": False, "status": "authorized", "last_verified_at": None},
+        ]
+        child_adagents = {
+            "authorized_agents": [
+                {
+                    "url": "https://interchange.io",
+                    "authorization_type": "inline_properties",
+                    "authorized_for": "Test",
+                    "properties": [
+                        {"property_id": "p-001", "name": "Prop 1"},
+                        {"property_id": "p-002", "name": "Prop 2"},
+                    ],
+                }
+            ]
+        }
+
+        mock_client = MagicMock()
+        mock_client.get = AsyncMock(return_value=self._make_dir_response(dir_publishers))
+
+        with unittest.mock.patch(
+            "adcp.adagents.fetch_adagents", new_callable=AsyncMock
+        ) as mock_fetch:
+            mock_fetch.return_value = child_adagents
+            report = await detect_publisher_properties_divergence(
+                "https://interchange.io",
+                client=mock_client,
+            )
+
+        assert report == []
+
+    async def test_count_divergence_reported(self):
+        """When directory and federated counts differ, a divergence entry is returned."""
+        dir_publishers = [
+            {"publisher_domain": "drift.com", "discovery_method": "adagents_authoritative",
+             "manager_domain": None, "properties_authorized": 5, "properties_total": 5,
+             "signing_keys_pinned": False, "status": "authorized", "last_verified_at": None},
+        ]
+        # Federated fetch returns only 3 properties — diverges from directory's 5
+        child_adagents = {
+            "authorized_agents": [
+                {
+                    "url": "https://interchange.io",
+                    "authorization_type": "inline_properties",
+                    "authorized_for": "Test",
+                    "properties": [
+                        {"property_id": f"p-{i}", "name": f"Prop {i}"} for i in range(3)
+                    ],
+                }
+            ]
+        }
+
+        mock_client = MagicMock()
+        mock_client.get = AsyncMock(return_value=self._make_dir_response(dir_publishers))
+
+        with unittest.mock.patch(
+            "adcp.adagents.fetch_adagents", new_callable=AsyncMock
+        ) as mock_fetch:
+            mock_fetch.return_value = child_adagents
+            report = await detect_publisher_properties_divergence(
+                "https://interchange.io",
+                client=mock_client,
+            )
+
+        assert len(report) == 1
+        assert isinstance(report[0], PublisherDivergence)
+        assert report[0].publisher_domain == "drift.com"
+        assert report[0].directory_properties_authorized == 5
+        assert report[0].federated_properties_found == 3
+        assert report[0].child_fetch_error is None
+
+    async def test_child_fetch_error_recorded(self):
+        """When fetching the child adagents.json fails, error is recorded in report."""
+        from adcp.exceptions import AdagentsNotFoundError
+
+        dir_publishers = [
+            {"publisher_domain": "gone.com", "discovery_method": "adagents_authoritative",
+             "manager_domain": None, "properties_authorized": 1, "properties_total": 1,
+             "signing_keys_pinned": False, "status": "authorized", "last_verified_at": None},
+        ]
+
+        mock_client = MagicMock()
+        mock_client.get = AsyncMock(return_value=self._make_dir_response(dir_publishers))
+
+        with unittest.mock.patch(
+            "adcp.adagents.fetch_adagents", new_callable=AsyncMock
+        ) as mock_fetch:
+            mock_fetch.side_effect = AdagentsNotFoundError("gone.com")
+            report = await detect_publisher_properties_divergence(
+                "https://interchange.io",
+                client=mock_client,
+            )
+
+        assert len(report) == 1
+        assert report[0].publisher_domain == "gone.com"
+        assert report[0].child_fetch_error is not None
+        assert report[0].federated_properties_found == 0
+
+    async def test_sample_size_caps_probes(self):
+        """sample_size should limit the number of publisher domains probed."""
+        dir_publishers = [
+            {"publisher_domain": f"site{i}.com", "discovery_method": "adagents_authoritative",
+             "manager_domain": None, "properties_authorized": 1, "properties_total": 1,
+             "signing_keys_pinned": False, "status": "authorized", "last_verified_at": None}
+            for i in range(10)
+        ]
+        child_adagents = {
+            "authorized_agents": [
+                {"url": "https://interchange.io", "authorization_type": "inline_properties",
+                 "authorized_for": "Test",
+                 "properties": [{"property_id": "p-001", "name": "Prop 1"}]}
+            ]
+        }
+
+        mock_client = MagicMock()
+        mock_client.get = AsyncMock(return_value=self._make_dir_response(dir_publishers))
+
+        with unittest.mock.patch(
+            "adcp.adagents.fetch_adagents", new_callable=AsyncMock
+        ) as mock_fetch:
+            mock_fetch.return_value = child_adagents
+            await detect_publisher_properties_divergence(
+                "https://interchange.io",
+                sample_size=3,
+                client=mock_client,
+            )
+
+        assert mock_fetch.call_count == 3

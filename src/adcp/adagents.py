@@ -1477,19 +1477,21 @@ async def fetch_agent_authorizations_from_directory(
     encoded_agent = quote(agent_url, safe="")
     url = f"{directory_url.rstrip('/')}/api/v1/agents/{encoded_agent}/publishers"
 
-    params: dict[str, str | int] = {
-        "limit": limit,
-        "status": ",".join(status),
-    }
+    # Build params as a list of (key, value) tuples so multi-value status
+    # produces repeated keys (?status=authorized&status=revoked), not a
+    # comma-joined string that httpx would percent-encode as %2C.
+    param_list: list[tuple[str, str | int | float | bool | None]] = [("limit", limit)]
+    for s in status:
+        param_list.append(("status", s))
     if cursor:
-        params["cursor"] = cursor
+        param_list.append(("cursor", cursor))
     if since is not None:
-        params["since"] = since.isoformat()
+        param_list.append(("since", since.isoformat()))
 
     own_client = client is None
     http = client or httpx.AsyncClient()
     try:
-        response = await http.get(url, params=params, timeout=timeout)
+        response = await http.get(url, params=param_list, timeout=timeout)
         response.raise_for_status()
         data = response.json()
     finally:
@@ -1528,24 +1530,32 @@ async def fetch_agent_authorizations_from_directory(
 class PublisherDivergence:
     """Divergence record for a single publisher domain.
 
-    ``missing_in_inline`` contains property IDs that the federated fetch
-    found in the publisher's own adagents.json but the directory's inline
-    resolution did not surface (publisher has properties the directory
-    doesn't know about yet).
+    ``missing_in_inline`` contains property IDs the federated fetch found
+    in the publisher's own adagents.json that the directory did not surface
+    (publisher has properties the directory doesn't know about yet).
 
-    ``missing_in_federated`` contains property IDs the directory claims
-    the agent is authorized for but the publisher's own adagents.json
-    does not include (stale directory entry or publisher revocation).
+    ``missing_in_federated`` contains property IDs the directory claims the
+    agent is authorized for but the publisher's own adagents.json does not
+    include (stale directory entry or publisher revocation).
+
+    Both fields are ``None`` when the directory does not return per-publisher
+    property IDs (count-only mode). In count-only mode the comparison is
+    limited to ``directory_properties_authorized != federated_properties_found``.
+    **Count-equality does NOT guarantee set equality** — if the publisher
+    replaced three properties with three different ones, count-only mode
+    produces a false-negative. Use ``?include=properties`` on the directory
+    endpoint (when supported) to get full set-diff precision.
 
     ``child_fetch_error`` is non-``None`` when the publisher's adagents.json
-    could not be fetched or parsed; the other fields are empty in that case.
+    could not be fetched or parsed; the count and list fields carry no
+    meaning in that case.
     """
 
     publisher_domain: str
     directory_properties_authorized: int
     federated_properties_found: int
-    missing_in_inline: list[str]
-    missing_in_federated: list[str]
+    missing_in_inline: list[str] | None
+    missing_in_federated: list[str] | None
     child_fetch_error: str | None
 
 
@@ -1560,24 +1570,35 @@ async def detect_publisher_properties_divergence(
     timeout: float = 30.0,
     client: httpx.AsyncClient | None = None,
 ) -> DivergenceReport:
-    """Compare inline resolution (directory) against federated resolution (per-child fetch).
+    """Compare directory inline resolution against per-child federated resolution.
 
     For each publisher the directory lists under ``agent_url``:
 
-    1. Read the directory's inline result (``properties_authorized`` count).
-    2. Fetch the publisher's own adagents.json directly.
+    1. Read the directory's ``properties_authorized`` count (inline result).
+    2. Fetch the publisher's own adagents.json directly (federated result).
     3. Apply the same agent-URL filter via :func:`get_properties_by_agent`.
-    4. Diff the ``(publisher_domain, property_id)`` sets.
+    4. Compare counts.  When they differ, emit a :class:`PublisherDivergence`.
 
-    Per adcp#4827 §Resolution-paths, when the two paths disagree the
-    federated result is authoritative; this function surfaces the signal
+    Per adcp#4827 §Resolution-paths, the federated result is authoritative
+    when the two paths disagree. This function surfaces count-level divergence
     so operators can detect data-integrity issues before they affect buyers.
 
+    **Known limitation — count-only comparison.**  The AAO directory
+    endpoint currently returns ``properties_authorized`` counts, not
+    property-ID lists.  Count-equality does NOT guarantee set equality:
+    if a publisher replaced three old properties with three new ones, this
+    function reports no divergence.  ``PublisherDivergence.missing_in_inline``
+    and ``.missing_in_federated`` are ``None`` (not ``[]``) to signal
+    count-only mode.  A future call to ``?include=properties`` on the
+    directory endpoint will enable full set-diff once that parameter is
+    deployed.
+
     **Cost warning — ``sample_size`` is mandatory for large networks.**
-    Running a full sweep against cafemedia's ~6,800 child publishers requires
-    ~6,800 sequential (or parallel) HTTP fetches.  With a 30 s timeout each
-    that is hours of wall-clock time.  Pass ``sample_size=N`` to cap the
-    sweep; the sample is taken from the first page of directory results.
+    Running a full sweep against cafemedia's ~6,800 child publishers launches
+    ~6,800 concurrent HTTP fetches.  With a 30 s timeout each, total wall-clock
+    is bounded by the slowest fetch, but server-side rate limits may apply.
+    Pass ``sample_size=N`` to cap the sweep; the sample is taken from the
+    first page of directory results.
 
     Args:
         agent_url: The agent URL to check authorizations for.
@@ -1644,23 +1665,28 @@ async def detect_publisher_properties_divergence(
                     publisher_domain=entry.publisher_domain,
                     directory_properties_authorized=entry.properties_authorized,
                     federated_properties_found=0,
-                    missing_in_inline=[],
-                    missing_in_federated=[],
+                    # None = count-only mode; IDs unavailable from directory
+                    missing_in_inline=None,
+                    missing_in_federated=None,
                     child_fetch_error=str(exc),
                 )
 
             fed_count = len(federated_ids)
-            # Without explicit property IDs from the directory we can only
-            # compare counts; return None (no divergence record) when counts match.
+            # Count-only comparison: directory does not currently return
+            # per-publisher property IDs, so we cannot do a full set diff.
+            # Count-equality is a necessary but NOT sufficient condition for
+            # set-equality (three replaced properties are undetectable at
+            # this level). missing_in_inline/federated are None to signal
+            # "count-only mode" — callers must not treat [] as "no diff".
             if fed_count == entry.properties_authorized:
-                return None
+                return None  # counts agree; set divergence undetectable here
 
             return PublisherDivergence(
                 publisher_domain=entry.publisher_domain,
                 directory_properties_authorized=entry.properties_authorized,
                 federated_properties_found=fed_count,
-                missing_in_inline=[],
-                missing_in_federated=[],
+                missing_in_inline=None,
+                missing_in_federated=None,
                 child_fetch_error=None,
             )
 

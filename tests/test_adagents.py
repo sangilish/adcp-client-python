@@ -2785,8 +2785,10 @@ class TestFetchAgentAuthorizationsFromDirectory:
         )
 
         _, kwargs = mock_client.get.call_args
-        params = kwargs.get("params", {})
-        assert params.get("status") == "authorized"
+        # Status uses repeated query-param keys, not comma-joining
+        params = kwargs.get("params", [])
+        status_values = [v for k, v in params if k == "status"]
+        assert status_values == ["authorized"]
 
     async def test_custom_directory_url(self):
         """directory_url prefix should be respected."""
@@ -2890,6 +2892,9 @@ class TestDetectPublisherPropertiesDivergence:
         assert report[0].directory_properties_authorized == 5
         assert report[0].federated_properties_found == 3
         assert report[0].child_fetch_error is None
+        # Count-only mode: missing_in_* are None (not []) to signal no set-diff available
+        assert report[0].missing_in_inline is None
+        assert report[0].missing_in_federated is None
 
     async def test_child_fetch_error_recorded(self):
         """When fetching the child adagents.json fails, error is recorded in report."""

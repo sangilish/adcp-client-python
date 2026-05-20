@@ -1,5 +1,27 @@
 # Changelog
 
+## [5.7.0](https://github.com/adcontextprotocol/adcp-client-python/compare/v5.6.0...v5.7.0) (2026-05-20)
+
+
+### Features
+
+* **adagents:** publisher_domains compact form, revoked_publisher_domains, streaming fetch caps (closes [#729](https://github.com/adcontextprotocol/adcp-client-python/issues/729)) ([#753](https://github.com/adcontextprotocol/adcp-client-python/issues/753)) ([352d1bb](https://github.com/adcontextprotocol/adcp-client-python/commit/352d1bb6719cfd20bf4a703d1d6bd0d1077a0c47))
+* **decisioning:** emit AGENT_SUSPENDED / AGENT_BLOCKED dedicated codes (closes [#409](https://github.com/adcontextprotocol/adcp-client-python/issues/409)) ([#748](https://github.com/adcontextprotocol/adcp-client-python/issues/748)) ([12f8ffe](https://github.com/adcontextprotocol/adcp-client-python/commit/12f8ffe7fa4318affeb2ad728296db4ac88a452b))
+* **preview:** opt-in v3.1.0-beta.1 client surface ([#4761](https://github.com/adcontextprotocol/adcp-client-python/issues/4761), [#4762](https://github.com/adcontextprotocol/adcp-client-python/issues/4762), [#4763](https://github.com/adcontextprotocol/adcp-client-python/issues/4763)) ([#747](https://github.com/adcontextprotocol/adcp-client-python/issues/747)) ([35fdd47](https://github.com/adcontextprotocol/adcp-client-python/commit/35fdd47f9a3319b4325a8dc3597ab6a1a4dfc74f))
+* **types:** auto-enforce publisher-selector XOR at Pydantic parse time (closes [#759](https://github.com/adcontextprotocol/adcp-client-python/issues/759)) ([#761](https://github.com/adcontextprotocol/adcp-client-python/issues/761)) ([e973864](https://github.com/adcontextprotocol/adcp-client-python/commit/e9738644b2016f57ebd55345fc7cc06775aa5a03))
+* **validation:** validate_publisher_properties_item accepts Pydantic models ([#756](https://github.com/adcontextprotocol/adcp-client-python/issues/756)) ([01c6491](https://github.com/adcontextprotocol/adcp-client-python/commit/01c649119b3af5b8d39ce2e018559a01a6e96540))
+
+
+### Bug Fixes
+
+* **adagents:** disable follow_redirects on ads.txt MANAGERDOMAIN fetch ([#754](https://github.com/adcontextprotocol/adcp-client-python/issues/754)) ([76a679f](https://github.com/adcontextprotocol/adcp-client-python/commit/76a679fdf2f9aa7fd3d1ccfe36340e9750a95d15))
+* **adagents:** resolve-and-validate gate against DNS-based SSRF ([#757](https://github.com/adcontextprotocol/adcp-client-python/issues/757), partial) ([#760](https://github.com/adcontextprotocol/adcp-client-python/issues/760)) ([969f373](https://github.com/adcontextprotocol/adcp-client-python/commit/969f373873cd187bc08e542122c71bd76a4072a2))
+
+
+### Reverts
+
+* **preview:** remove opt-in v3.1 preview surface ([#747](https://github.com/adcontextprotocol/adcp-client-python/issues/747)) ([#755](https://github.com/adcontextprotocol/adcp-client-python/issues/755)) ([6947870](https://github.com/adcontextprotocol/adcp-client-python/commit/6947870bb2d3a5746ab174b3dee747a50e9c63fc))
+
 ## [5.6.0](https://github.com/adcontextprotocol/adcp-client-python/compare/v5.5.0...v5.6.0) (2026-05-19)
 
 

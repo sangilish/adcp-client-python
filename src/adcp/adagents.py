@@ -960,16 +960,21 @@ def _resolve_agent_properties(
         if not isinstance(selectors, list):
             return []
         resolved: list[dict[str, Any]] = []
+        seen_ids: set[str | None] = set()
         for selector in selectors:
             if not isinstance(selector, dict):
                 continue
             for domain in _selector_domains(selector):
                 inline = _resolve_inline(selector, top_level_properties, domain)
                 if inline is not None:
-                    resolved.extend(inline)
+                    for prop in inline:
+                        pid = prop.get("property_id")
+                        if pid not in seen_ids:
+                            seen_ids.add(pid)
+                            resolved.append(prop)
                     # inline succeeded; skip federated fetch for this domain
                 # inline is None → no parent-file data for domain; federated
-                # fetch would go here (not yet implemented).
+                # fetch would go here (not yet implemented; see #749 Part 2).
         return resolved
 
     return []
@@ -998,10 +1003,10 @@ def _resolve_inline(
     """Attempt to satisfy a selector from the parent file's inline properties.
 
     Returns ``None`` when no property in ``parent_properties`` carries
-    ``publisher_domain == domain`` — the caller MUST try a federated fetch.
+    ``publisher_domain == domain`` — the inline path has no data for this
+    domain; a federated fetch (not yet implemented) would be the next step.
     Returns ``[]`` when inline candidates exist for the domain but none pass
-    the selector filter — this is a real empty set; the caller MUST NOT fall
-    back to federated.
+    the selector filter — this is a real empty set; do NOT fall back.
 
     Handles ``selection_type`` values: ``"all"``, ``"by_tag"``, ``"by_id"``.
     Unknown types are treated permissively (return all domain candidates).
@@ -1025,7 +1030,7 @@ def _resolve_inline(
             if required_tags & {t for t in p.get("tags", []) if isinstance(t, str)}
         ]
     if selection_type == "by_id":
-        required_ids = set(selector.get("property_ids", []))
+        required_ids = {i for i in selector.get("property_ids", []) if isinstance(i, str)}
         return [p for p in candidates if p.get("property_id") in required_ids]
     # Unknown selection_type — permissive fallback
     return list(candidates)

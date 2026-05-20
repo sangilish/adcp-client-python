@@ -1452,6 +1452,32 @@ class TestGetPropertiesByAgent:
         properties = get_properties_by_agent(adagents_data, "https://agent1.example.com")
         assert properties == []
 
+    def test_get_properties_by_agent_publisher_properties_by_id(self):
+        """publisher_properties with selection_type by_id filters by property_id."""
+        adagents_data = {
+            "properties": [
+                {"property_id": "ctv-001", "publisher_domain": "cnn.com", "name": "CNN CTV"},
+                {"property_id": "ctv-002", "publisher_domain": "cnn.com", "name": "CNN Web"},
+            ],
+            "authorized_agents": [
+                {
+                    "url": "https://agent1.example.com",
+                    "authorization_type": "publisher_properties",
+                    "authorized_for": "Specific properties",
+                    "publisher_properties": [
+                        {
+                            "publisher_domain": "cnn.com",
+                            "selection_type": "by_id",
+                            "property_ids": ["ctv-001"],
+                        },
+                    ],
+                },
+            ],
+        }
+
+        properties = get_properties_by_agent(adagents_data, "https://agent1.example.com")
+        assert {p["property_id"] for p in properties} == {"ctv-001"}
+
     def test_get_properties_by_agent_protocol_agnostic(self):
         """Should match agent URL regardless of protocol."""
         adagents_data = {

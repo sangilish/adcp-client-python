@@ -1478,6 +1478,60 @@ class TestGetPropertiesByAgent:
         properties = get_properties_by_agent(adagents_data, "https://agent1.example.com")
         assert {p["property_id"] for p in properties} == {"ctv-001"}
 
+    def test_get_properties_by_agent_cafemedia_scale(self):
+        """Cafemedia/interchange.io canonical fixture: 6,843 inline properties across
+        6,800 child domains, all raptive_managed, one authorized agent.
+
+        Sized to catch O(N×M) regressions — at this scale an unindexed
+        implementation (~46 M ops) would cause a multi-second timeout.
+        """
+        # 6,800 child publisher domains (cafemedia fan-out shape)
+        child_domains = [f"site{i:04d}.raptive.com" for i in range(6800)]
+        properties: list[dict] = []
+        # One property per child domain
+        for i, domain in enumerate(child_domains):
+            properties.append({
+                "property_id": f"p-{i:05d}",
+                "publisher_domain": domain,
+                "name": f"Site {i} — Raptive Managed",
+                "tags": ["raptive_managed"],
+            })
+        # 43 extra properties on the first 43 domains (total: 6,843)
+        for i in range(43):
+            properties.append({
+                "property_id": f"extra-{i:03d}",
+                "publisher_domain": child_domains[i],
+                "name": f"Site {i} Extra Property",
+                "tags": ["raptive_managed", "ctv"],
+            })
+
+        adagents_data = {
+            "properties": properties,
+            "authorized_agents": [
+                {
+                    "url": "https://interchange.io",
+                    "authorization_type": "publisher_properties",
+                    "authorized_for": "Raptive managed network",
+                    "publisher_properties": [
+                        {
+                            "publisher_domains": child_domains,
+                            "selection_type": "by_tag",
+                            "property_tags": ["raptive_managed"],
+                        }
+                    ],
+                }
+            ],
+        }
+
+        result = get_properties_by_agent(adagents_data, "https://interchange.io")
+        assert len(result) == 6843
+        result_domains = {p["publisher_domain"] for p in result}
+        assert result_domains <= set(child_domains)
+        assert all("raptive_managed" in p.get("tags", []) for p in result)
+        # Must return resolved property dicts, not selector dicts
+        assert all("property_id" in p for p in result)
+        assert not any("publisher_domains" in p for p in result)
+
     def test_get_properties_by_agent_protocol_agnostic(self):
         """Should match agent URL regardless of protocol."""
         adagents_data = {

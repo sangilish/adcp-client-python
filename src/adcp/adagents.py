@@ -959,13 +959,22 @@ def _resolve_agent_properties(
         selectors = agent.get("publisher_properties", [])
         if not isinstance(selectors, list):
             return []
+        # Pre-index parent properties by domain once — O(N) — so per-domain
+        # lookups are O(1) instead of O(N), avoiding O(N×M) at cafemedia scale
+        # (6,843 properties × 6,800 domains = 46 M ops without this index).
+        domain_index: dict[str, list[dict[str, Any]]] = {}
+        for p in top_level_properties:
+            if isinstance(p, dict):
+                d = p.get("publisher_domain")
+                if isinstance(d, str) and d:
+                    domain_index.setdefault(d, []).append(p)
         resolved: list[dict[str, Any]] = []
         seen_ids: set[str | None] = set()
         for selector in selectors:
             if not isinstance(selector, dict):
                 continue
             for domain in _selector_domains(selector):
-                inline = _resolve_inline(selector, top_level_properties, domain)
+                inline = _resolve_inline(selector, domain_index, domain)
                 if inline is not None:
                     for prop in inline:
                         pid = prop.get("property_id")
@@ -997,24 +1006,24 @@ def _selector_domains(selector: dict[str, Any]) -> list[str]:
 
 def _resolve_inline(
     selector: dict[str, Any],
-    parent_properties: list[dict[str, Any]],
+    domain_index: dict[str, list[dict[str, Any]]],
     domain: str,
 ) -> list[dict[str, Any]] | None:
     """Attempt to satisfy a selector from the parent file's inline properties.
 
-    Returns ``None`` when no property in ``parent_properties`` carries
-    ``publisher_domain == domain`` — the inline path has no data for this
-    domain; a federated fetch (not yet implemented) would be the next step.
-    Returns ``[]`` when inline candidates exist for the domain but none pass
-    the selector filter — this is a real empty set; do NOT fall back.
+    ``domain_index`` is a pre-built mapping of publisher_domain → property list
+    (built once per ``_resolve_agent_properties`` call for O(1) per-domain
+    lookup instead of O(N) linear scan).
+
+    Returns ``None`` when ``domain_index`` has no entry for ``domain`` — the
+    inline path has no data for this domain; a federated fetch would be next.
+    Returns ``[]`` when inline candidates exist but none pass the selector
+    filter — this is a real empty set; do NOT fall back.
 
     Handles ``selection_type`` values: ``"all"``, ``"by_tag"``, ``"by_id"``.
     Unknown types are treated permissively (return all domain candidates).
     """
-    candidates = [
-        p for p in parent_properties
-        if isinstance(p, dict) and p.get("publisher_domain") == domain
-    ]
+    candidates = domain_index.get(domain)
     if not candidates:
         return None  # no inline data for this domain
 

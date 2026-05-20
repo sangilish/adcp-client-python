@@ -1498,11 +1498,21 @@ async def fetch_agent_authorizations_from_directory(
         if own_client:
             await http.aclose()
 
+    if not isinstance(data, dict):
+        raise AdagentsValidationError(
+            f"Directory returned unexpected JSON type {type(data).__name__!r} "
+            f"for /api/v1/agents/{{agent_url}}/publishers"
+        )
+
     publishers: list[AgentPublisherEntry] = []
-    for row in data.get("publishers", data.get("results", [])):
+    raw_rows = data.get("publishers") or data.get("results") or []
+    for row in raw_rows:
+        domain = row.get("publisher_domain", "")
+        if not domain:
+            continue  # skip malformed rows missing the required field
         publishers.append(
             AgentPublisherEntry(
-                publisher_domain=row["publisher_domain"],
+                publisher_domain=domain,
                 discovery_method=row.get("discovery_method", "adagents_authoritative"),
                 manager_domain=row.get("manager_domain"),
                 properties_authorized=row.get("properties_authorized", 0),
@@ -1620,9 +1630,18 @@ async def detect_publisher_properties_divergence(
             sample_size=100,
         )
         for entry in report:
-            print(f"{entry.publisher_domain}: "
-                  f"+{len(entry.missing_in_inline)} inline-only, "
-                  f"+{len(entry.missing_in_federated)} federated-only")
+            if entry.child_fetch_error:
+                print(f"{entry.publisher_domain}: fetch error — {entry.child_fetch_error}")
+            elif entry.missing_in_inline is not None:
+                # Full set-diff available (future: when directory returns IDs)
+                print(f"{entry.publisher_domain}: "
+                      f"+{len(entry.missing_in_inline)} inline-only, "
+                      f"+{len(entry.missing_in_federated or [])} federated-only")
+            else:
+                # Count-only mode: missing_in_* are None
+                print(f"{entry.publisher_domain}: count mismatch "
+                      f"(dir={entry.directory_properties_authorized}, "
+                      f"federated={entry.federated_properties_found})")
     """
     import asyncio
 

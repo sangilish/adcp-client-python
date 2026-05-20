@@ -2741,6 +2741,8 @@ class TestFetchAgentAuthorizationsFromDirectory:
         assert first.properties_authorized == 6843
         assert first.signing_keys_pinned is True
         assert first.status == "authorized"
+        # A caller-provided client must NOT be closed by the function
+        mock_client.aclose.assert_not_called()
 
     async def test_url_encodes_agent_url(self):
         """agent_url with slashes and colons must be %-encoded in the path."""
@@ -2852,6 +2854,7 @@ class TestDetectPublisherPropertiesDivergence:
             )
 
         assert report == []
+        mock_client.aclose.assert_not_called()
 
     async def test_count_divergence_reported(self):
         """When directory and federated counts differ, a divergence entry is returned."""

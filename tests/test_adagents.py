@@ -1338,8 +1338,34 @@ class TestGetPropertiesByAgent:
         assert properties[1]["name"] == "Site 2"
 
     def test_get_properties_by_agent_publisher_properties(self):
-        """Should return publisher_properties selectors for publisher_properties type."""
+        """publisher_properties resolves inline properties, not raw selector dicts."""
         adagents_data = {
+            "properties": [
+                {
+                    "property_id": "ctv-001",
+                    "publisher_domain": "cnn.com",
+                    "name": "CNN CTV",
+                    "tags": ["ctv"],
+                },
+                {
+                    "property_id": "ctv-002",
+                    "publisher_domain": "cnn.com",
+                    "name": "CNN Sports CTV",
+                    "tags": ["ctv", "sports"],
+                },
+                {
+                    "property_id": "web-001",
+                    "publisher_domain": "cnn.com",
+                    "name": "CNN Web",
+                    "tags": ["web"],
+                },
+                {
+                    "property_id": "espn-001",
+                    "publisher_domain": "espn.com",
+                    "name": "ESPN Home",
+                    "tags": ["sports"],
+                },
+            ],
             "authorized_agents": [
                 {
                     "url": "https://agent1.example.com",
@@ -1361,11 +1387,70 @@ class TestGetPropertiesByAgent:
         }
 
         properties = get_properties_by_agent(adagents_data, "https://agent1.example.com")
-        assert len(properties) == 2
-        assert properties[0]["publisher_domain"] == "cnn.com"
-        assert properties[0]["selection_type"] == "by_tag"
-        assert properties[1]["publisher_domain"] == "espn.com"
-        assert properties[1]["selection_type"] == "all"
+        property_ids = {p["property_id"] for p in properties}
+        # by_tag "ctv": ctv-001 and ctv-002 match; web-001 does not
+        # all: espn-001 matches
+        assert property_ids == {"ctv-001", "ctv-002", "espn-001"}
+        # Must return resolved property dicts, not selector dicts
+        assert all("property_id" in p for p in properties)
+        assert not any("selection_type" in p for p in properties)
+
+    def test_get_properties_by_agent_publisher_domains_fanout(self):
+        """publisher_domains[] compact form fans out to per-domain inline resolution."""
+        adagents_data = {
+            "properties": [
+                {
+                    "property_id": "a-001",
+                    "publisher_domain": "site-a.com",
+                    "name": "Site A",
+                    "tags": ["news"],
+                },
+                {
+                    "property_id": "b-001",
+                    "publisher_domain": "site-b.com",
+                    "name": "Site B",
+                    "tags": ["news"],
+                },
+            ],
+            "authorized_agents": [
+                {
+                    "url": "https://agent1.example.com",
+                    "authorization_type": "publisher_properties",
+                    "authorized_for": "Multi-domain",
+                    "publisher_properties": [
+                        {
+                            "publisher_domains": ["site-a.com", "site-b.com"],
+                            "selection_type": "all",
+                        },
+                    ],
+                },
+            ],
+        }
+
+        properties = get_properties_by_agent(adagents_data, "https://agent1.example.com")
+        assert {p["property_id"] for p in properties} == {"a-001", "b-001"}
+
+    def test_get_properties_by_agent_publisher_properties_no_inline(self):
+        """When no parent-file properties exist for a domain, returns empty (no federated)."""
+        adagents_data = {
+            "properties": [],
+            "authorized_agents": [
+                {
+                    "url": "https://agent1.example.com",
+                    "authorization_type": "publisher_properties",
+                    "authorized_for": "Cross-domain",
+                    "publisher_properties": [
+                        {
+                            "publisher_domain": "external.com",
+                            "selection_type": "all",
+                        },
+                    ],
+                },
+            ],
+        }
+
+        properties = get_properties_by_agent(adagents_data, "https://agent1.example.com")
+        assert properties == []
 
     def test_get_properties_by_agent_protocol_agnostic(self):
         """Should match agent URL regardless of protocol."""

@@ -949,14 +949,86 @@ def _resolve_agent_properties(
             and {t for t in p.get("tags", []) if isinstance(t, str)} & authorized_tags
         ]
 
-    # Handle publisher_properties (cross-domain references)
+    # Handle publisher_properties: inline-resolution path per adcp#4827.
+    # For each selector, fan out over its domain(s), then try to satisfy from
+    # the parent file's top-level properties[] before considering a federated
+    # fetch. Federated fetch (per-domain HTTP) is a follow-up; this change
+    # fixes the primary bug of returning raw selector dicts instead of resolved
+    # property objects.
     if authorization_type == "publisher_properties":
-        publisher_props = agent.get("publisher_properties", [])
-        if not isinstance(publisher_props, list):
+        selectors = agent.get("publisher_properties", [])
+        if not isinstance(selectors, list):
             return []
-        return [p for p in publisher_props if isinstance(p, dict)]
+        resolved: list[dict[str, Any]] = []
+        for selector in selectors:
+            if not isinstance(selector, dict):
+                continue
+            for domain in _selector_domains(selector):
+                inline = _resolve_inline(selector, top_level_properties, domain)
+                if inline is not None:
+                    resolved.extend(inline)
+                    # inline succeeded; skip federated fetch for this domain
+                # inline is None → no parent-file data for domain; federated
+                # fetch would go here (not yet implemented).
+        return resolved
 
     return []
+
+
+def _selector_domains(selector: dict[str, Any]) -> list[str]:
+    """Extract publisher domain(s) from a publisher_properties selector.
+
+    Handles both the scalar ``publisher_domain`` form and the compact
+    ``publisher_domains[]`` array form from adcp#4827.
+    """
+    domains = selector.get("publisher_domains")
+    if isinstance(domains, list):
+        return [d for d in domains if isinstance(d, str) and d]
+    domain = selector.get("publisher_domain")
+    if isinstance(domain, str) and domain:
+        return [domain]
+    return []
+
+
+def _resolve_inline(
+    selector: dict[str, Any],
+    parent_properties: list[dict[str, Any]],
+    domain: str,
+) -> list[dict[str, Any]] | None:
+    """Attempt to satisfy a selector from the parent file's inline properties.
+
+    Returns ``None`` when no property in ``parent_properties`` carries
+    ``publisher_domain == domain`` — the caller MUST try a federated fetch.
+    Returns ``[]`` when inline candidates exist for the domain but none pass
+    the selector filter — this is a real empty set; the caller MUST NOT fall
+    back to federated.
+
+    Handles ``selection_type`` values: ``"all"``, ``"by_tag"``, ``"by_id"``.
+    Unknown types are treated permissively (return all domain candidates).
+    """
+    candidates = [
+        p for p in parent_properties
+        if isinstance(p, dict) and p.get("publisher_domain") == domain
+    ]
+    if not candidates:
+        return None  # no inline data for this domain
+
+    selection_type = selector.get("selection_type", "all")
+    if selection_type == "all":
+        return list(candidates)
+    if selection_type == "by_tag":
+        required_tags = {t for t in selector.get("property_tags", []) if isinstance(t, str)}
+        if not required_tags:
+            return list(candidates)
+        return [
+            p for p in candidates
+            if required_tags & {t for t in p.get("tags", []) if isinstance(t, str)}
+        ]
+    if selection_type == "by_id":
+        required_ids = set(selector.get("property_ids", []))
+        return [p for p in candidates if p.get("property_id") in required_ids]
+    # Unknown selection_type — permissive fallback
+    return list(candidates)
 
 
 def get_all_properties(adagents_data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1035,8 +1107,8 @@ def get_properties_by_agent(adagents_data: dict[str, Any], agent_url: str) -> li
     - inline_properties: Properties defined directly in the agent's properties array
     - property_ids: Filter top-level properties by property_id
     - property_tags: Filter top-level properties by tags
-    - publisher_properties: References properties from other publisher domains
-      (returns the selector objects, not resolved properties)
+    - publisher_properties: Inline-resolved properties from other publisher
+      domains (resolved from the parent file's top-level properties[] array)
 
     Args:
         adagents_data: Parsed adagents.json data
